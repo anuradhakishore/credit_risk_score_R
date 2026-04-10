@@ -1,0 +1,370 @@
+---
+title: "Untitled"
+format: html
+editor: visual
+---
+
+## Quarto
+
+Quarto enables you to weave together content and executable code into a finished document. To learn more about Quarto see <https://quarto.org>.
+
+## Running Code
+
+When you click the **Render** button a document will be generated that includes both content and the output of embedded code. You can embed code like this:
+
+```{r}
+#Credit Score Model
+library(tidyverse)
+library(tidymodels)
+library(corrplot)
+library(splines)
+```
+
+
+```{r}
+# Read the data files
+data <- read_csv("GiveMeSomeCredit/cs-training.csv",show_col_types = FALSE)
+
+#checking dimensions and glimpse for data
+dim(data)
+glimpse(data)
+
+#checking Target variable
+table(data$SeriousDlqin2yrs)
+
+```
+
+```{r}
+# Removing ID column
+data <- data[, -1]
+glimpse(data)
+
+```
+```{r}
+# Working on NA's
+print("-------------------------------------------------------------")  
+print("CHECKING ON NA's")
+colSums(is.na(data))
+
+#Doing Median Imputation for Montly income missing values
+data<-data|>
+      mutate(
+      MonthlyIncome=ifelse(is.na(MonthlyIncome),
+      median(MonthlyIncome,na.rm=TRUE),
+      MonthlyIncome),
+      
+      NumberOfDependents=ifelse(is.na(NumberOfDependents),
+      median(NumberOfDependents,na.rm=TRUE),
+      NumberOfDependents)
+      )
+  
+print("-------------------------------------------------------------")  
+print("AFTER MEDIAN IMPUTATION")    
+colSums(is.na(data))
+```
+```{#Step 2: Exploratory Data Analysis}
+
+#2.1 Target Distribution  
+#2.2 Age vs Default  
+#2.3 Income vs Default  
+#2.4 Debt Ratio vs Default  
+#2.5 Correlation Analysis  
+
+```
+
+```{r}
+# 2.1 Target Distribution
+
+#Count values
+data|>count(SeriousDlqin2yrs)|>
+  mutate(percent=n/sum(n)*100)
+
+
+```
+Observation:93% are non defaulters.
+6.7% are defaulters.
+There is a class imbalance problem here.
+
+
+
+```{r}
+#2.2 Age vs Default 
+data|> ggplot(aes(x=age,fill=factor(SeriousDlqin2yrs)))+
+      geom_histogram(bins=30,alpha=0.6,position="identity")+
+      labs(
+        title="Age distribution by Default",
+        x="Age",
+        fill="Default(1=Yes)"
+      )
+```
+
+Observation:Younger individuals tend to show a higher proportion of defaults compared to older individuals, indicating that age may be an important predictor of credit risk
+
+```{r}
+#2.3 Income vs Default
+#We will use log transformation here, since income has huge variation
+
+#HISTOGRAM
+data|>
+  ggplot(aes(x=log(MonthlyIncome+1),fill=factor(SeriousDlqin2yrs)))+
+           geom_histogram(bins=30,alpha=0.6,position="identity")+
+      labs(
+        title="Income vs Default (Log Scale)",
+        x="Income (log)",
+        fill="Default(1=Yes)"
+      )
+
+
+
+#BOXPLOTS
+data|>
+  ggplot(aes(x=factor(SeriousDlqin2yrs),y=MonthlyIncome)) +
+  geom_boxplot(fill="lightgreen")+
+  labs(
+    x = "Default (0 = No, 1 = Yes)",
+    y = "Monthly Income",
+    title = "Income vs Default"
+  )
+
+```
+```{r}
+#Now checking on defaulter rate on income groups
+data|>
+  mutate(income_group=ntile(MonthlyIncome,5)) |>
+  group_by(income_group)|>
+  summarise(default_rate=mean(SeriousDlqin2yrs)) |>
+  ggplot(aes(x=factor(income_group),y=default_rate))+
+  geom_col(fill = "steelblue") +
+  labs(
+    x = "Income Group (Low → High)",
+    y = "Default Rate",
+    title = "Default Rate by Income Group"
+  )
+
+```
+Observation:The data was divided into income groups using quantiles, and the default rate was calculated for each group. The results indicate that lower-income groups tend to have higher default rates compared to higher-income groups, suggesting income is a key determinant of credit risk.
+
+```{r}
+#2.4 Debt Ratio vs Default 
+
+data |>
+  mutate(debt_group = ntile(DebtRatio, 5)) |>
+  group_by(debt_group) |>
+  summarise(default_rate = mean(SeriousDlqin2yrs)) |>
+  ggplot(aes(x = factor(debt_group), y = default_rate)) +
+  geom_col(fill = "darkred") +
+  labs(
+    x = "Debt Group (Low → High)",
+    y = "Default Rate",
+    title = "Default Rate by Debt Ratio"
+  )
+
+```
+Observation:The relationship between debt ratio and default risk is non-linear. While higher debt generally increases default risk, the highest debt group exhibits a lower default rate, possibly due to higher income or better financial management among these individuals.
+```{r}
+#Analysing Group 5 (highest debt group)
+
+data_grp <-data|>
+  mutate(debt_group=ntile(DebtRatio,5))
+
+#Filter only group 5
+group5<- data_grp|>
+  filter(debt_group==5)
+
+#Check Debt Ratio Range
+
+print("_________________________DEBT RATIO GROUP 5_______________________________________")
+summary(group5$DebtRatio)
+quantile(group5$DebtRatio, probs = c(0, 0.25, 0.5, 0.75, 1))
+
+#Monthly Income
+print("_________________________MONTHLY INCOME GROUP 5____________________________________")
+summary(group5$MonthlyIncome)
+
+#Compare with overall data
+print("_________________________MONTHLY INCOME OVERALL____________________________________")
+summary(data$MonthlyIncome)
+
+#Comparison beyween incomes (mean and median) between date groups
+print("_________________________INCOME ACROSS GROUP________________________________________")
+data_grp |>
+  group_by(debt_group) |>
+  summarise(
+    avg_income = mean(MonthlyIncome, na.rm = TRUE),
+    median_income = median(MonthlyIncome, na.rm = TRUE)
+  )
+
+
+```
+Observation:
+Mean > Median ==> Income is skewed (outliers present)
+Median income of group 4 is low, so more defaulters.
+Due to the skewed nature of income data, median values provide a more robust measure than mean. The results reveal that the fourth debt group exhibits the lowest median income and the highest default rate, suggesting that this group represents individuals with significant financial strain. The highest debt group does not have the lowest median income, indicating that extreme debt ratios may be influenced by factors such as very low income rather than true financial burden.
+
+```{r}
+#2.5 Correlation Analysis 
+#How variables are related to each other
+
+#co-relation matrix
+cor_mat <- cor(data)
+
+#Visualize (Heatmap)
+corrplot(cor_mat, method = "color", tl.cex = 0.6)
+
+
+```
+Observation:
+Strong correlation: These are very important predictors
+NumberOfTimes90DaysLate
+NumberOfTime30-59DaysPastDueNotWorse
+NumberOfTime60-89DaysPastDueNotWorse
+
+Moderate correlation:
+Number of Dependants
+
+Low coorelation:
+Age (usually weaker)
+
+
+Correlation analysis reveals that past delinquency variables are strongly associated with default risk, highlighting their predictive importance. While some inter-variable correlations exist, they are not sufficiently high to cause multicollinearity concerns, suggesting that most variables can be retained for modeling
+
+
+CONCLUSION FROM EDA:
+Customers with lower income, higher debt burden, and past payment issues are more likely to default.
+Class Imbalance: The dataset is highly imbalanced, with significantly fewer default cases compared to non-default cases. This is important for model evaluation.
+
+Age Effect: Younger individuals tend to have a higher likelihood of default compared to older individuals, suggesting age is a relevant predictor.
+
+Income Effect: Income is an important factor in credit risk. While raw distributions were skewed, analysis using log transformation and grouped comparisons indicates that lower-income individuals tend to exhibit higher default risk.
+
+Debt Ratio Effect: Debt ratio shows a non-linear relationship with default risk. The highest default rate occurs in the fourth debt group, indicating that moderate-to-high debt levels combined with low income represent the highest risk segment.
+
+Income vs Debt Insight: Analysis of income across debt groups reveals that higher debt levels are associated with lower income, confirming that financial stress increases when income is low and debt burden is high.
+
+Median vs Mean Insight: Due to the skewed nature of income data, median values provided a more reliable measure than mean, highlighting the importance of robust statistics in financial data analysis.
+
+Correlation Insight: Variables related to past delinquency exhibit strong relationships with default, indicating their importance in predictive modeling. No severe multicollinearity was observed.
+
+
+
+
+
+
+```{r}
+#Step 3: Model Building
+#3.1 Data Preparation
+  #Train-test split
+  #Cross-validation (folds)
+  #Preprocessing (recipe):
+  #Missing values
+  #Normalization
+  #Splines (non-linearity)
+
+#3.2 Baseline Model (Logistic Regression)
+  #Build logistic regression
+  #Fit model
+  #Evaluate using:
+  #ROC AUC
+  #Accuracy
+
+#3.3 Random Forest (Tuned Model)
+
+#3.4 Gradient Boosting (XGBoost)
+
+#3.5 Model Comparison
+  #Compare ROC AUC
+  #Select best model
+```
+
+
+```{r}
+#3.1 Data Preparation
+
+#Train-test split
+#strata = SeriousDlqin2yrs keeps class balance similar in both sets
+set.seed(123)
+split<-initial_split(data,prop=0.8,strata=SeriousDlqin2yrs)
+train<-training(split)
+test<-testing(split)
+
+dim(train)
+dim(test)
+
+
+```
+```{r}
+#Cross-validation folds
+
+set.seed(123)
+folds<-vfold_cv(train,v=5,strata=SeriousDlqin2yrs)
+folds
+```
+
+
+```{r}
+#Preprocessing recipe
+#Step:	What happens
+#recipe:	defines steps
+#prep:	learns parameters
+#bake:	applies transformations
+
+rec<-recipe(SeriousDlqin2yrs ~ . , data=train) |>
+  step_impute_median(all_numeric_predictors()) |>
+  step_ns(age,deg_free=3) |>
+  step_ns(MonthlyIncome,deg_free = 3) |>
+  step_ns(DebtRatio, deg_free = 3) |>
+  step_normalize(all_numeric_predictors())
+
+
+#Learn from data → prep()
+#Apply transformation → bake()
+
+prep_rec<-prep(rec)
+train_processed <-bake(prep_rec,new_data=NULL)
+
+glimpse(train_processed)
+
+#check missing value after preprocessing
+colSums(is.na(train_processed))
+
+
+#length of folds counts
+length(folds$splits)
+
+```
+
+Observation:The dataset was split into training and testing sets using an 80/20 split with stratification on the target variable to preserve class proportions. Five-fold cross-validation was then applied to the training set for robust model evaluation. A preprocessing recipe was created to handle missing values using median imputation, normalize numeric predictors, and incorporate spline transformations for age and monthly income to capture possible non-linear relationships
+
+```{r}
+
+#3.2 Baseline Model (Logistic Regression)
+
+#Build logistic regression
+log_model<-logistic_reg()|>
+  set_engine("glm") |>
+  set_mode("classification")
+
+#Create workflow
+log_wf<-workflow()|>
+  add_recipe(rec)|>
+  add_model(log_model)
+
+#fit with cross validation
+set.seed(123)
+
+log_res<-fit_resamples(
+  log_wf,
+  resamples=folds,
+  metrics=metric_set(roc_auc,accuracy)
+)
+
+#performance
+collect_metrics(log_res)
+
+  #Fit model
+  #Evaluate using:
+  #ROC AUC
+  #Accuracy
+
+```
+
