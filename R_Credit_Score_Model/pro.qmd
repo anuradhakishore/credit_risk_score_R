@@ -18,6 +18,7 @@ library(tidyverse)
 library(tidymodels)
 library(corrplot)
 library(splines)
+library(vip)    #variable importance
 ```
 
 
@@ -282,6 +283,11 @@ Correlation Insight: Variables related to past delinquency exhibit strong relati
 
 #Train-test split
 #strata = SeriousDlqin2yrs keeps class balance similar in both sets
+
+#Keep 1 = default as the positive class by making "1" the first factor level.
+data<-data|>
+  mutate(SeriousDlqin2yrs=factor(SeriousDlqin2yrs,levels=c("1","0")))
+
 set.seed(123)
 split<-initial_split(data,prop=0.8,strata=SeriousDlqin2yrs)
 train<-training(split)
@@ -289,6 +295,13 @@ test<-testing(split)
 
 dim(train)
 dim(test)
+
+#converting SeriousDlqin2yrs into factor so that it looks like classification problem in R
+#train<-train|>
+ # mutate(SeriousDlqin2yrs=factor(SeriousDlqin2yrs))
+
+#test <- test |>
+  #mutate(SeriousDlqin2yrs = factor(SeriousDlqin2yrs))
 
 
 ```
@@ -310,7 +323,7 @@ folds
 
 rec<-recipe(SeriousDlqin2yrs ~ . , data=train) |>
   step_impute_median(all_numeric_predictors()) |>
-  step_ns(age,deg_free=3) |>
+  step_cut(age, breaks = c(0,25,35,50,70,100)) |>
   step_ns(MonthlyIncome,deg_free = 3) |>
   step_ns(DebtRatio, deg_free = 3) |>
   step_normalize(all_numeric_predictors())
@@ -361,10 +374,400 @@ log_res<-fit_resamples(
 #performance
 collect_metrics(log_res)
 
-  #Fit model
-  #Evaluate using:
-  #ROC AUC
-  #Accuracy
+
+```
+Observation on cross folds:
+
+Model is correct 93% times
+The dataset is imbalanced
+Most people = non-default (0)
+Few people = default (1)
+So model can:
+❌ Predict everything as 0
+✔ Still get high accuracy
+
+ROC AUC = 0.6995 (≈ 0.70)
+AUC	Meaning
+0.5	random
+0.7	OK
+0.8	good
+0.9	excellent
+
+Our model:~0.70 → OK but not strong
+
+Although logistic regression achieves high accuracy, the relatively lower ROC AUC highlights its limitation in handling class imbalance and capturing non-linear relationships. Therefore, more advanced models such as tree-based methods are expected to provide better predictive performance.
+
+
+```{r}
+
+#Fit final model on full training data
+log_fit<-fit(log_wf,data=train)
+
+#Predict on test data
+log_prob <- predict(log_fit,new_data = test, type="prob")
+log_class <- predict(log_fit, new_data = test, type = "class")
+
+# Combine predictions with true test data
+log_results<-bind_cols(test,log_prob,log_class)
+head(log_results)
+
+# Evaluate on test data
+roc_auc(log_results,truth=SeriousDlqin2yrs, .pred_1)
+accuracy(log_results,truth=SeriousDlqin2yrs, estimate=.pred_class)
+
+```
+Observation on test data:
+The logistic regression model achieves an ROC AUC of approximately 0.70, indicating moderate discriminatory power. While the model is able to rank defaulters higher than non-defaulters to some extent, the separation between classes remains limited, suggesting that more complex models may improve predictive performance.
+
+```{r}
+```
+
+
+```{r}
+#CURVES RELATED TO LOGISTIC REGRESSION
+```
+
+
+```{r}
+#1.ROC Curve ==> Shows how well the model separates defaulters vs non-defaulters
+
+roc_manual <- log_results |>
+  arrange(desc(.pred_1)) |>
+  mutate(
+    TP = cumsum(SeriousDlqin2yrs == "1"),
+    FP = cumsum(SeriousDlqin2yrs == "0"),
+    FN = sum(SeriousDlqin2yrs == "1") - TP,
+    TN = sum(SeriousDlqin2yrs == "0") - FP,
+    TPR = TP / (TP + FN),
+    FPR = FP / (FP + TN)
+  )
+
+ggplot(roc_manual, aes(x = FPR, y = TPR)) +
+  geom_line(color = "blue") +
+  geom_abline(linetype = "dashed") +
+  labs(title = "ROC Curve (Manual)")
+
+
+
+
+```
+Observation:The ROC curve lies above the diagonal, indicating that the logistic regression model performs better than random classification. However, the gradual slope and lack of sharp curvature near the top-left corner suggest limited discriminative power. This indicates that while the model ranks observations reasonably well (AUC ≈ 0.69), it does not strongly separate the classes, likely due to underfitting or insufficient feature representation
+
+
+```{r}
+#2.Confusion Matrix Heatmap
+
+cm <- conf_mat(log_results, truth = SeriousDlqin2yrs, estimate = .pred_class)
+cm
+autoplot(cm, type = "heatmap")
+
+```
+Observation:
+TP = 81
+FN = 1895
+
+We are missing almost ALL defaulters
+Sensitivity=TP(TP+FN)=0.041
+Only 4.1% of defaulters are detected
+This is a major failure in credit risk
+Accuracy is misleading!
+
+Accuracy= Total TP+TN≈veryhigh
+dataset is heavily imbalanced
+most people are non-defaulters
+
+
+```{r}
+#3.Histogram / Density of Predicted Probabilities by Actual Class
+log_results |>
+  ggplot(aes(x = .pred_1, fill = SeriousDlqin2yrs)) +
+  geom_density(alpha = 0.4) +
+  labs(
+    title = "Predicted Default Probability by Actual Class",
+    x = "Predicted Probability of Default",
+    fill = "Actual Class"
+  )
+
+
+
+```
+Observation:
+Both curves heavily overlap
+Most values are between 0.00 – 0.15
+Defaulters are slightly higher, but not clearly separated
+our model is not separating the two classes well
+Even though:Defaulters have slightly higher probabilities
+The difference is too small.
+
+The model is Weak separation + poor calibration.
+
+```{r}
+#Calibration Plot
+
+#Shows whether predicted probabilities match actual observed risk.
+
+calib <- log_results |>
+  mutate(bin = ntile(.pred_1, 10)) |>
+  group_by(bin) |>
+  summarise(
+    mean_pred = mean(.pred_1),
+    obs_rate = mean(as.numeric(SeriousDlqin2yrs) - 1)
+  )
+
+ggplot(calib, aes(x = mean_pred, y = obs_rate)) +
+  geom_point() +
+  geom_line() +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed") +
+  labs(
+    title = "Calibration Plot",
+    x = "Average Predicted Probability",
+    y = "Observed Default Rate"
+  )
+
+
+```
+Observation:
+The calibration plot suggests that the predicted probabilities are systematically lower than the observed default rates, indicating poor calibration. The model underestimates the likelihood of default, which is problematic in credit risk applications. Although the model shows reasonable ranking ability (as seen from ROC), its probability estimates are unreliable and require recalibration or improved feature representation.
+
+
+
+FINAL CONCLUSION ON LOGISTIC REGRESSION:
+The logistic regression model demonstrates moderate discriminative ability with an AUC of approximately 0.69, indicating it can reasonably rank defaulters above non-defaulters. However, the confusion matrix reveals very poor recall (~4%), meaning the model fails to identify most defaulters. The predicted probability distributions show significant overlap between classes, with most values concentrated at low levels, indicating weak separation. Additionally, calibration analysis suggests that the model underestimates default risk. Overall, while the model performs adequately in ranking, it is not effective for classification or decision-making in its current form due to class imbalance, low sensitivity, and limited feature representation.
+
+
+
+
+
+
+
+
+#3.3 Random Forest (Tuned Model)
+#captures non-linear patterns
+#handles feature interactions automatically
+#works well with imbalanced data
+
+  ##Build Random Forest
+  ##Fit model (with tuning + workflow)
+  ###Select best model
+  ##Evaluate using: ROC AUC,Accuracy
+  ##Graphs
+```{r}
+
+#Build model
+rf_model<-rand_forest(
+  trees=500,
+  mtry=tune(),
+  min_n=tune()) |>
+  set_engine("ranger") |>
+  set_mode("classification")
+
+
+#create workflow
+rf_wf<-workflow() |>
+  add_recipe(rec) |>
+  add_model(rf_model)
+
+
+#Tune model
+set.seed(123)
+
+rf_res<-tune_grid(
+  rf_wf,
+  resamples=folds,
+  grid=5,
+  metrics=metric_set(roc_auc,accuracy),
+  control = control_grid(verbose = TRUE)
+)
+
+#Check performance
+collect_metrics(rf_res)
+
+#select best parameters
+best_rf<-select_best(rf_res,metric="roc_auc")
+best_rf
+
+
+#Finalize model
+final_rf<-finalize_workflow(rf_wf,best_rf)
+
+#Fit on full training data
+rf_fit<-fit(final_rf,data=train)
+
+#Predict on test data
+rf_pred <- predict(rf_fit, test, type = "prob") |>
+  bind_cols(predict(rf_fit, test)) |>
+  bind_cols(test)
+
+#ROC AUC
+roc_auc(rf_pred, truth = SeriousDlqin2yrs, .pred_1)
+
+#accuracy
+accuracy(rf_pred, truth = SeriousDlqin2yrs, .pred_class)
+
+
+```
+Observation:After finalizing and fitting on the full training set, your test set results became:
+ROC AUC = 0.8534:It means the model has good ability to separate defaulters vs non-defaulters,the model will assign a higher risk score to the defaulter about 85.3% of the time
+Accuracy = 0.9370 :About 93.7% of cases were classified correctly.
+
+
+
+```{r}
+#CURVES RELATED TO RANDOM FOREST:
+
+#1. ROC CURVE
+library(yardstick)
+
+roc_curve(rf_pred, truth = SeriousDlqin2yrs, .pred_1) |>
+  autoplot()
+```
+Observation: 
+X-axis:1−specificity → False Positive Rate
+Y-axis: Sensitivity → True Positive Rate
+Dotted diagonal line → Random model (AUC = 0.5)
+curve (black line) →  Random Forest model
+Strongly above the diagonal
+Bends quickly toward top-left corner
+
+This means:Model is good at distinguishing defaulters vs non-defaulters
+
+```{r}
+#2.Precision-Recall Curve:When we predict default → how often we are  correct?”
+pr_curve(rf_pred, truth = SeriousDlqin2yrs, .pred_1) |>
+  autoplot()
+```
+Observation:
+X-axis (Recall) → How many defaulters we catch
+Y-axis (Precision) → Out of predicted defaulters, how many are actually defaulters
+
+Left side (start of curve)
+Recall is low (we are catching only a few defaulters)
+Precision is high (~80%)
+We are very accurate, but only catching a small number of defaulters
+
+Middle of curve
+Recall increases (we catch more defaulters)
+Precision drops (~40–50%)
+We catch more defaulters, but also start making more mistakes.
+
+Right side (end of curve)
+Recall ≈ 1 (you catch almost ALL defaulters)
+Precision is very low (~10%)
+We are catching everyone, but many are NOT defaulters
+
+we label almost everyone as risky → lots of wrong predictions
+
+Best strategy is:Focus on left side of curve
+
+“Pick only high-risk customers where precision is high”
+
+Because: Banks don’t want to wrongly reject good customers
+
+```{r}
+#3. Confusion Matrix
+
+conf_mat(rf_pred,truth=SeriousDlqin2yrs,estimate = .pred_class)
+```
+We are missing many defaulters:
+
+1842 defaulters missed
+Only 137 caught
+
+
+
+FINAL CONCLUSION ON RANDOM FOREST
+The model is conservative, favoring safe predictions and minimizing false alarms, but at the cost of missing many high-risk customers.
+#we can work on classification threshold
+
+The Random Forest model was trained using cross-validation and optimized based on ROC AUC. The best hyperparameters selected were mtry = 1 and min_n = 11, resulting in strong overall performance.
+
+On the test data:
+
+ROC AUC ≈ 0.85 → good ability to distinguish defaulters vs non-defaulters
+Accuracy ≈ 93.7% → high overall classification performance
+
+However, deeper evaluation using the confusion matrix and Precision–Recall curve reveals important insights:
+
+The model performs well in identifying non-defaulters
+It produces very few false positives (good customers wrongly flagged)
+But it misses a large number of defaulters (high false negatives)
+
+The Random Forest model demonstrates strong ranking ability (AUC ~0.85), but requires threshold tuning to better capture defaulters, as it currently prioritizes overall accuracy over risk detection.
+
+
+
+
+#3.3 Decision Tree (Tuned Model)
+#Captures non-linearity
+
+  ##Build Decision Tree
+  ##Fit model (with tuning + workflow)
+  ###Select best model
+  ##Evaluate using: ROC AUC,Accuracy
+  ##Graphs
+```{r}
+#Build Decision Tree model
+dt_model<-decision_tree(
+  cost_complexity = tune(),
+  tree_depth=tune(),
+  min_n=tune()
+)|>
+  set_engine("rpart") |>
+  set_mode("classification")
+
+#create workflow
+dt_wf<-workflow()|>
+  add_recipe(rec)|>
+  add_model(dt_model)
+
+#tune model
+set.seed(123)
+dt_res<-tune_grid(
+  dt_wf,
+  resamples=folds,
+  grid=10,
+  metrics=metric_set(roc_auc,accuracy),
+  control=control_grid(verbose=TRUE)
+)
+
+#Check Performance
+collect_metrics(dt_res)
+
+#Select best model
+best_dt<-select_best(dt_res,metric="roc_auc")
+best_dt
+
+#finalise and fit models
+final_dt <- finalize_workflow(dt_wf, best_dt)
+dt_fit <- fit(final_dt, data = train)
+
+#Predict on Test Data
+dt_pred<-predict(dt_fit,test,type="prob") |>
+  bind_cols(predict(dt_fit,test)) |>
+  bind_cols(test)
+
+#Evaluate Model
+roc_auc(dt_pred, truth = SeriousDlqin2yrs, .pred_1)
+accuracy(dt_pred, truth = SeriousDlqin2yrs, .pred_class)
+
+
+  
 
 ```
 
+
+```{r}
+#plot tree
+dt_fit |>
+  extract_fit_parsnip() |>
+  pluck("fit") |>
+  rpart.plot()
+```
+
+
+```{r}
+#confusion matrix
+conf_mat(dt_pred, truth = SeriousDlqin2yrs, estimate = .pred_class)
+```
+  
+  
