@@ -19,6 +19,9 @@ library(tidymodels)
 library(corrplot)
 library(splines)
 library(vip)    #variable importance
+library(rpart.plot)
+library(xgboost)
+library(themis)
 ```
 
 
@@ -303,7 +306,6 @@ dim(test)
 #test <- test |>
   #mutate(SeriousDlqin2yrs = factor(SeriousDlqin2yrs))
 
-
 ```
 ```{r}
 #Cross-validation folds
@@ -323,6 +325,7 @@ folds
 
 rec<-recipe(SeriousDlqin2yrs ~ . , data=train) |>
   step_impute_median(all_numeric_predictors()) |>
+  #step_smote(SeriousDlqin2yrs)|>   # SMOTE
   step_cut(age, breaks = c(0,25,35,50,70,100)) |>
   step_ns(MonthlyIncome,deg_free = 3) |>
   step_ns(DebtRatio, deg_free = 3) |>
@@ -368,7 +371,14 @@ set.seed(123)
 log_res<-fit_resamples(
   log_wf,
   resamples=folds,
-  metrics=metric_set(roc_auc,accuracy)
+  metrics=metric_set(roc_auc,
+    accuracy,
+    recall,
+    sensitivity,
+    specificity,
+    precision,
+    f_meas),
+  control=control_resamples(save_pred=TRUE)
 )
 
 #performance
@@ -412,8 +422,11 @@ log_results<-bind_cols(test,log_prob,log_class)
 head(log_results)
 
 # Evaluate on test data
-roc_auc(log_results,truth=SeriousDlqin2yrs, .pred_1)
+roc_auc(log_results, truth = SeriousDlqin2yrs, .pred_1, event_level = "second")
 accuracy(log_results,truth=SeriousDlqin2yrs, estimate=.pred_class)
+
+# confusion matrix
+conf_mat(log_results, truth = SeriousDlqin2yrs, estimate = .pred_class)
 
 ```
 Observation on test data:
@@ -541,7 +554,7 @@ The logistic regression model demonstrates moderate discriminative ability with 
 
 
 
-#3.3 Random Forest (Tuned Model)
+#3.4 Random Forest (Tuned Model)
 #captures non-linear patterns
 #handles feature interactions automatically
 #works well with imbalanced data
@@ -554,6 +567,13 @@ The logistic regression model demonstrates moderate discriminative ability with 
 ```{r}
 
 #Build model
+
+#receipe with SMOTE to handle class inbalance
+
+rf_rec <- recipe(SeriousDlqin2yrs ~ ., data = train) |>
+  step_impute_median(all_numeric_predictors()) |>
+  step_smote(SeriousDlqin2yrs)
+
 rf_model<-rand_forest(
   trees=500,
   mtry=tune(),
@@ -564,7 +584,7 @@ rf_model<-rand_forest(
 
 #create workflow
 rf_wf<-workflow() |>
-  add_recipe(rec) |>
+  add_recipe(rf_rec) |>
   add_model(rf_model)
 
 
@@ -757,7 +777,7 @@ accuracy(dt_pred, truth = SeriousDlqin2yrs, .pred_class)
 
 
 ```{r}
-#plot tree
+#plot tree (although this is not useful)
 dt_fit |>
   extract_fit_parsnip() |>
   pluck("fit") |>
@@ -769,5 +789,156 @@ dt_fit |>
 #confusion matrix
 conf_mat(dt_pred, truth = SeriousDlqin2yrs, estimate = .pred_class)
 ```
-  
+Observation: Decision Tree is“More aggressive”
+Flags more people as risky (compared to Random Forest)
+Catches more defaulters(compared to Random Forest)
+But also mislabels more safe customers(compared to Random Forest)
+```{r}
+#2.Precision-Recall Curve:When we predict default → how often we are  correct?”
+pr_curve(dt_pred, truth = SeriousDlqin2yrs, .pred_1) |>
+  autoplot()
+```
+Observation:“Finds more risky people, but makes more mistakes”
+Recall (X-axis) → how many defaulters you catch
+Precision (Y-axis) → how accurate those predictions are
+
+Random Forest PR curve (earlier):
+Precision at start: ~75–80%
+Decision Tree PR curve:
+Precision at start: ~55–60%
+Random Forest is more precise at top predictions
+Decision Tree:Catches more defaulters (higher recall),But less accurate
+
+DECISION TREE SUMMARY
+The Decision Tree model shows moderate performance with lower precision compared to Random Forest, but captures a higher number of defaulters, highlighting the trade-off between recall and precision in imbalanced classification problems.
+
+
+
+#3.4 XGBoost (Tuned Model)
+#Captures complex patterns + improves performance over Random Forest
+
+  # Data Preparation
+  # XGBoost Model Specification
+  # Workflow Construction
+  # Cross-Validation Results
+  # Final Model Fit
+  # Test Set Evaluation
+  # Feature Importance
+```{r}
+
+# recipe
+xgb_rec <- recipe(SeriousDlqin2yrs ~ ., data = train) |>
+  step_impute_median(all_numeric_predictors()) |>
+  step_smote(SeriousDlqin2yrs) |>
+  step_cut(age, breaks = c(0, 25, 35, 50, 70, 120)) |>
+  step_dummy(all_nominal_predictors()) |>
+  step_zv(all_predictors())
+
+# tunable xgboost model
+xgb_tune <- boost_tree(
+  trees = 500,
+  tree_depth = tune(),
+  learn_rate = tune(),
+  min_n = tune(),
+  loss_reduction = 0,
+  sample_size = 0.8
+) |>
+  set_engine("xgboost") |>
+  set_mode("classification")
+
+# create workflow
+xgb_tuned_wf <- workflow() |>
+  add_recipe(xgb_rec) |>
+  add_model(xgb_tune)
+
+# define grid
+xgb_grid <- grid_regular(
+  tree_depth(range = c(3L, 10L)),
+  learn_rate(range = c(-3, -1)),
+  min_n(range = c(5L, 30L)),
+  levels = 3
+)
+
+# tune with cross-validation
+set.seed(123)
+xgb_res <- tune_grid(
+  xgb_tuned_wf,
+  resamples = folds,
+  grid = xgb_grid,
+  metrics = metric_set(roc_auc, accuracy, sens, spec,recall, precision, f_meas),
+  control = control_grid(save_pred = TRUE)
+)
+
+collect_metrics(xgb_res)
+show_best(xgb_res, metric = "roc_auc")
+
+```
+
+
+```{r}
+#Fit final model on training data
+best_params<-select_best(xgb_res,metric="roc_auc")
+final_xgb_wf<-finalize_workflow(xgb_tuned_wf,best_params)
+xgb_fit<- fit(final_xgb_wf,data=train)
+
+#Predict on test_set (class)
+test_pred_class<-predict(xgb_fit,new_data=test,type='class')
+
+#Predict on test_set (probability)
+test_pred_prob<-predict(xgb_fit,new_data=test,type='prob')
+
+#combine above two
+
+test_results<-bind_cols(test,test_pred_class,test_pred_prob)
+
+glimpse(test_results)
+
+
+```
+
+```{r}
+
+#evaluate
+roc_auc(test_results, truth = SeriousDlqin2yrs, .pred_1)
+accuracy(test_results, truth = SeriousDlqin2yrs, estimate = .pred_class)
+conf_mat(test_results, truth = SeriousDlqin2yrs, estimate = .pred_class)
+
+
+```
+Observation:
+Risky customers caught:
+Recall(Sensitivity): 380/(380+1599)=19.2%  (Model misses nearly 80% of defaults)
+
+How correct is the model when it predicts risky:
+Precision :380/(380+257) =59.7%
+
+Specificity: 27764/(27764+257) =99.1%
+
+The binary classification model achieved strong performance with ROC AUC = 0.860, indicating good ability to distinguish risky and non-risky customers.
+Overall accuracy = 93.81%, showing high prediction performance.
+The model performs very well in identifying non-default / low-risk customers.
+Sensitivity for detecting default customers is relatively low, meaning some risky customers are missed.
+The model is conservative, with fewer false positives but higher false negatives.
+Suitable as a credit scoring / customer ranking model.
+Further improvement can be made through threshold tuning, class balancing, and recall optimization.
+Overall, the model provides a strong base for credit risk decision-making.
+
+
+
+The models were generally effective at identifying low-risk / non-default customers, but weaker in detecting default customers due to class imbalance.
+This suggests the limitation may be less about the algorithms themselves and more about the data imbalance, feature quality, and decision threshold settings.
+Since ROC AUC is reasonably strong, the models still have useful ranking power, meaning they can separate higher-risk from lower-risk customers.
+Therefore, it is not that the models failed completely; rather, they require further optimization to become production-ready.
+Better results may be achieved through:
+Threshold tuning
+Resampling methods (SMOTE / undersampling)
+Feature engineering
+Cost-sensitive learning
+Ensemble / boosting methods
+Final conclusion: None of the three models gave the best final solution yet, but they provide a solid baseline for improvement
+
+```{r}
+
+```
+
   
