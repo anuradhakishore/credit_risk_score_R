@@ -1,0 +1,132 @@
+---
+title: "comparison"
+format: html
+---
+
+```{r}
+
+log_results <- readRDS("model_outputs/logistic_predictions.rds")
+rf_pred <- readRDS("model_outputs/random_forest_predictions.rds")
+xgb_pred <- readRDS("model_outputs/xgboost_predictions.rds")
+
+```
+
+
+```{r}
+
+#Create one comparison function
+
+get_model_metrics <- function(data, model_name, class_col = ".pred_class") {
+
+  bind_rows(
+    accuracy(data, truth = SeriousDlqin2yrs, estimate = !!sym(class_col)),
+    precision(data, truth = SeriousDlqin2yrs, estimate = !!sym(class_col), event_level = "first"),
+    recall(data, truth = SeriousDlqin2yrs, estimate = !!sym(class_col), event_level = "first"),
+    f_meas(data, truth = SeriousDlqin2yrs, estimate = !!sym(class_col), event_level = "first"),
+    sens(data, truth = SeriousDlqin2yrs, estimate = !!sym(class_col), event_level = "first"),
+    spec(data, truth = SeriousDlqin2yrs, estimate = !!sym(class_col), event_level = "first"),
+    roc_auc(data, truth = SeriousDlqin2yrs, .pred_1, event_level = "first"),
+    pr_auc(data, truth = SeriousDlqin2yrs, .pred_1, event_level = "first")
+  ) |>
+    mutate(model = model_name)
+}
+
+```
+
+
+
+```{r}
+#Build comparison table
+
+log_metrics <- get_model_metrics(log_results, "Logistic Regression")
+rf_metrics  <- get_model_metrics(rf_pred, "Random Forest")
+xgb_metrics <- get_model_metrics(xgb_pred, "XGBoost", class_col = "final_class")
+
+
+model_comparison <- bind_rows(log_metrics, rf_metrics, xgb_metrics) |>
+  select(model, .metric, .estimate) |>
+  pivot_wider(names_from = .metric, values_from = .estimate)|>
+  mutate(across(where(is.numeric), ~ round(.x, 3)))
+
+model_comparison
+
+
+
+
+
+```
+#Interpretation:
+
+Accuracy: Percentage of total predictions that were correct (high accuracy ≠ good credit model)
+
+Precision: Of all customers predicted as defaulters, how many actually are defaulted(When the model says a borrower is risky, how often is it correct?). High precision is good.
+
+Recall:Of all actual defaulters, how many were caught.Low recall = missed bad loans. Recall should be high.
+
+F-measure (F1 Score) : Overall balance between catching bad borrowers and being correct when flagging them.Useful when class is imbalanced
+
+Sensitivity: ability to detect actual defaulters.How sensitive is the model to risky customers? Same as Recall.
+
+Specificity: Of all safe borrowers, how many were correctly identified as safe?High specificity = fewer good customers rejected.
+
+ROC AUC:Measures model’s ability to separate: defaulters and non-defaulters.
+If we randomly choose one defaulter and one safe borrower, the model ranks the defaulter as riskier 85% of the time.
+
+PR AUC:focus on minority class performance and imbalanced datasets.
+Higher is better.
+How well does the model maintain precision while improving recall?
+
+Recall + PR AUC + ROC AUC usually matter more than raw accuracy.
+
+
+XGBoost provides the strongest overall performance, achieving the best discriminatory power and the highest ability to detect defaulters among all tested models.
+highest recall
+best ROC AUC
+est PR AUC
+best F1 score
+
+```{r}
+
+#Logistic Regression
+log_cm <- conf_mat(
+  log_results,
+  truth = SeriousDlqin2yrs,
+  estimate = .pred_class
+)
+
+log_cm
+
+
+#Random Forest
+rf_cm <- conf_mat(
+  rf_pred,
+  truth = SeriousDlqin2yrs,
+  estimate = .pred_class
+)
+
+rf_cm
+
+
+#XGBoost
+xgb_cm <- conf_mat(
+  xgb_pred,
+  truth = SeriousDlqin2yrs,
+  estimate = final_class
+)
+
+xgb_cm
+```
+```{r}
+
+#heatmap view
+autoplot(log_cm, type = "heatmap")
+autoplot(rf_cm, type = "heatmap")
+autoplot(xgb_cm, type = "heatmap")
+
+```
+```{r}
+class(final_xgb_wf)
+class(xgb_fit)
+
+```
+

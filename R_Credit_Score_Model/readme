@@ -1,0 +1,132 @@
+Building a Credit Score Model
+
+_______________________________________________________________________________________________________
+Predict: Will a customer default in the next 2 years?
+
+Target variable:SeriousDlqin2yrs
+1 → Customer defaulted ❌
+0 → Customer did NOT default ✅
+
+Each row = 1 customer
+
+Some important variables:
+
+RevolvingUtilizationOfUnsecuredLines → credit usage %
+age → age of customer
+DebtRatio → debt vs income
+MonthlyIncome
+NumberOfTimes90DaysLate
+NumberOfOpenCreditLines
+
+👉 These are like financial behavior signals
+
+_______________________________________________________________________________________________________
+WHICH MODEL TO CHOOSE
+
+🔹 1. Logistic Regression (Baseline)
+
+👉 Simple + interpretable
+👉 MUST include
+
+🔹 2. Decision Tree
+
+👉 Captures non-linearity
+👉 Easy to explain
+
+🔹 3. Random Forest ⭐
+
+👉 Very strong
+👉 Handles:
+
+Non-linearity
+interactions
+noise
+🔹 4. Gradient Boosting (XGBoost) 🔥
+
+👉 BEST performance usually
+👉 Industry standard
+
+🔹 5. (Optional) KNN / SVM
+
+👉 Good but less used in finance
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+2. Credit Risk Scorecard (VERY IMPORTANT for finance roles)
+
+This is HUGE for your profile.
+
+What to build:
+Convert model → credit score (300–850 type)
+Show:
+Score ranges
+Risk categories
+Approval threshold
+Example:
+Score > 700 → Low risk
+Score 600–700 → Medium
+Score < 600 → High risk
+Why this is powerful:
+Used in real banks
+Shows business understanding, not just ML
+
+👉 Recruiter perception: ⭐⭐⭐⭐⭐
+
+🔥 3. SHAP Explainability (Top-tier upgrade)
+
+SHAP values
+
+What to show:
+Which features drive default risk
+Example:
+High debt → increases risk
+High income → decreases risk
+Visuals:
+SHAP summary plot
+feature importance
+Why:
+Explainability is mandatory in finance
+Shows advanced understanding
+
+👉 Recruiter perception: ⭐⭐⭐⭐⭐
+6. Power BI Dashboard (VERY practical)
+
+Power BI
+
+What to show:
+Customer risk segmentation
+default rates
+KPI dashboard
+Why:
+Non-technical stakeholders LOVE this
+Matches real job requirements
+
+👉 Recruiter perception: ⭐⭐⭐⭐⭐
+
+🔥 7. API Deployment (More advanced than Flask UI)
+
+Instead of UI, build:
+
+REST API
+Input: customer data
+Output: default probability
+
+Tools:
+
+Flask API / FastAPI
+
+👉 Shows:
+
+production readiness
+backend skills
